@@ -175,13 +175,16 @@ PROJECT: for my $d (@projects) {
 	my ($ref,$src,$met,$start,$end) = (split)[0..4];
 	next unless $start && $end && $met;
 
-	# skip bogus hit targets and other non-displayed features
-        # with a non-chromosome ref. sequences
+	# skip hit targets and other non-displayed features
+        # with non-chromosome ref. sequences
 	next unless $refseq_OK{$ref};
+
+
+        # believe it or not, this is necessary
+        # and junk manages to slip through even after this
         next unless are_we_sure_this_is_good_gff($_);
 
-
-	# just index top-level feats
+	# no kids allowed; just index top-level feats
 	my $child = /Parent=/;
 
         # Try to guess the species
@@ -267,7 +270,6 @@ PROJECT: for my $d (@projects) {
 
     if (@gff_to_load) {
       # fix local paths
-      # this is not working for some reason
       if ($where ne $final_where) {
 	    print STDERR "fixing local path $where -> $final_where\n" if $debug;
 	    
