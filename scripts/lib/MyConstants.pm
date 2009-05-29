@@ -1,6 +1,7 @@
 package MyConstants;
 
-# various lookup tables etc;
+# various lookup tables, architecture specific paths,, etc etc.
+
 
 # The base directory for uploaded/extracted data files
 use constant WHERE      => "$ENV{HOME}/preview_data";
