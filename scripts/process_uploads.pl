@@ -2,42 +2,73 @@
 # This script processes unreleased uploads
 # to create a preview database and config for WIG and GFF3 files
 use strict;
-use lib "$ENV{HOME}/preview_browser/scripts/lib";
+
+# Trick to get the current working directory and include ./lib 
+# before we get started with the rest of the code
+my $root_dir;
+BEGIN {
+  $root_dir = $0;
+  $root_dir =~ s/[^\/]*$//;
+  $root_dir = "./" unless $root_dir =~ /\//;
+  push @INC, $root_dir . "/lib";
+}
 #use Cluster;
 use ConfigSet;
 use MyConstants;
 use Data::Dumper;
 use File::Spec;
+use LWP::UserAgent;
 use CGI  qw/escape unescape/;
 
-my $debug        = MyConstants::DEBUG;
-my $where        = MyConstants::WHERE;
-my %organism     = MyConstants::ORG;
-my %lab_color    = MyConstants::LABCOLOR;
-my %make_summary = map {$_ => 1}  MyConstants::WIG;
-my %refseq_OK    = map {$_ => 1}  MyConstants::REFSEQ;
+my $debug                = MyConstants::DEBUG;
+my $where                = MyConstants::WHERE;
+my $submission_key_url   = MyConstants::SUBMISSION_KEY_URL;
+my %organism             = MyConstants::ORG;
+my %lab_color            = MyConstants::LABCOLOR;
+my $upload_dir           = MyConstants::UPLOAD_DIR;
+my $data_dir_suffix      = MyConstants::DATA_DIR_SUFFIX;
+my $browser_root_dir     = MyConstants::BROWSER_ROOT;
+my $browser_conf_species = MyConstants::BROWSER_CONF_USES_SPECIES;
+my $browser_dir_pre_proj = MyConstants::BROWSER_DIR_BEFORE_PROJECT_ID;
+my $browser_dir_suffix   = MyConstants::BROWSER_DIR_SUFFIX;
+my %make_summary         = map {$_ => 1}  MyConstants::WIG;
+my %refseq_OK            = map {$_ => 1}  MyConstants::REFSEQ;
 
 # If this script is not run on the destination server
 # indicate the system path that will be used there
 my $final_where  = MyConstants::DESTINATION_DIR;
+$final_where = ($final_where =~ /^\// ? $final_where : $root_dir.$final_where);
+$final_where = File::Spec->rel2abs($final_where);
 
 # The list of project numbers
 my @projects;
 
 # link project numbers to labs and desciptions
 # need to automate creation of key.txt file (is it automated yet?)
-open IN, $where."/submission_data/submission_key.txt" or die $!;
+$where = ($where =~ /^\// ? $where : $root_dir.$where);
+$where = File::Spec->rel2abs($where);
+my $submission_key_file =  File::Spec->catfile($where, "submission_key.txt");
+if ($submission_key_url) {
+  my $useragent = new LWP::UserAgent();
+  my $res = $useragent->mirror($submission_key_url, $submission_key_file);
+  if (!$res->is_success) {
+    warn "Unable to mirror submission key URL to local file: $!";
+  }
+}
+
+open IN, $submission_key_file or die "Couldn't open submission list file: $!";
+
 my %project;
 while (<IN>) {
   chomp;
   $_ or next;
-  my ($p,$desc,$lab) = split "\t";
+  my ($p,$deprecated, $deprecated_by, $url, $desc, $lab, $status) = split "\t";
+  next if $status =~ /^released$/;
   $lab =~ s/,.+//;
   $desc =~ s/$lab[-_ ]*//i;
   $project{$p}{group} = $lab  || 'unknown submitting group';
   $project{$p}{desc}  = $desc || 'unknown submission type'; 
 }
-
 
 # if have command-line args, just run
 if (@ARGV) {
@@ -63,18 +94,27 @@ else {
 #    print "I will run ",scalar(@to_run)," of ",scalar(@uploads), " jobs\n";
 #    $cluster->cluster(@to_run);    
 #    exit;
-  die "Usage: ./process_uploads.pl uploadnum1, uploadnum2, ... uploadnumn\n";
+  print STDERR "Showing all unreleased submissions:\n";
+  print STDERR join("\n", map { "$_\t" . $project{$_}->{'group'} . "\t" . $project{$_}->{'desc'} } sort { $a <=> $b } keys(%project));
+  print STDERR "\n\n";
+  die "Usage: ./process_uploads.pl uploadnum1 uploadnum2 ... uploadnumn\n";
 }
 
 my $force = 1;
 
-chdir $where."/uploads" or warn "could not cd to ".$where. " $!";
-my $scripts = $where ."/scripts";
+if ($upload_dir) {
+  if ((-d $where) && !(-d File::Spec->catfile($where, $upload_dir))) {
+    mkdir File::Spec->catfile($where, $upload_dir) or warn "could not create ".File::Spec->catfile($where, $upload_dir). " $!";
+  }
+}
+my $scripts = File::Spec->rel2abs($root_dir);
+
 
 # Bit of a sanity check: are they unpacked directories?
 PROJECT: for my $d (@projects) {
-  if (!-d $d) {
-    warn "$d does not exist or is not a directory!";
+  my $project_dir = File::Spec->catfile($where, $upload_dir, $d, $data_dir_suffix);
+  if (!-d $project_dir) {
+    warn "$project_dir does not exist or is not a directory!";
     next;
   }
 
@@ -88,7 +128,7 @@ PROJECT: for my $d (@projects) {
   # find anything that is a WIG or a GFF file
   # Other formats, get lost!
   my $files = [];
-  recursedir($d, $files);
+  recursedir($project_dir, $files);
   
   my ($readme) = grep {/README/ || /idf/i} @$files;
   my $readme_text = prepare_citation($readme,$desc,$lab)
@@ -96,7 +136,14 @@ PROJECT: for my $d (@projects) {
   $readme_text ||= $desc || $lab;
   #print STDERR "README text\n$readme_text\n" if $debug;
 
-  my $bdir    = $where . "/browser/$d";
+  my ($bdir, $final_bdir);
+  if ($browser_dir_pre_proj) {
+    $bdir       = File::Spec->catfile($browser_root_dir, $d, $browser_dir_suffix);
+    $final_bdir = File::Spec->catfile($final_where, $d, $browser_dir_suffix);
+  } else {
+    $bdir       = File::Spec->catfile($browser_root_dir, $browser_dir_suffix, $d);
+    $final_bdir = File::Spec->catfile($final_where, $browser_dir_suffix, $d);
+  }
   #my $bdone   = $where . "/browser/$d.txt";
 
   # allow parallel processing
@@ -115,7 +162,7 @@ PROJECT: for my $d (@projects) {
     if ($force && -d $bdir) {
       `rm -fr $bdir`;
     }
-    mkdir $bdir or die $!;
+    system("mkdir -p '$bdir'") == 0 or die $!;
 
     # get the wiggle and gff files only
     find_wig_and_gff(\@gff,\@wig,$files);
@@ -146,11 +193,13 @@ PROJECT: for my $d (@projects) {
     mkdir $gff_dir unless -d $gff_dir;
 
     my (%class,%seen,$summary,$peaks);
+    print "\n\n";
+    print "Processing data files:\n";
 
     # Got GFF?
     for (@gff) {
       my $gff_file = $_;
-      print STDERR "\n\nworking on $_...\n" if $debug;
+      print STDERR "  Processing GFF file: $_...\n" if $debug;
       my ($volume,$path,$file) = File::Spec->splitpath($_);
       my $outfile = "$gff_dir/$file.gz";
 
@@ -169,7 +218,7 @@ PROJECT: for my $d (@projects) {
 	next if /^\#/;
 
         # Curse you, UCSC!
-	s/chr//i;
+	s/^chr//i;
 
         # Features with no coords, what's the point?
 	my ($ref,$src,$met,$start,$end) = (split)[0..4];
@@ -178,7 +227,6 @@ PROJECT: for my $d (@projects) {
 	# skip hit targets and other non-displayed features
         # with non-chromosome ref. sequences
 	next unless $refseq_OK{$ref};
-
 
         # believe it or not, this is necessary
         # and junk manages to slip through even after this
@@ -220,18 +268,20 @@ PROJECT: for my $d (@projects) {
       close GFFIN;
       close GFFOUT;
       
-      print STDERR "These are the data classes in this submission:\n",(Dumper \%class) if $debug;
+      print STDERR "    These are the data classes in this GFF:\n      ". join("      \n", map { "$_: " . join(", ", @{$class{$_}}) } keys(%class)) . "\n\n" if $debug;
 
       # Really big GFF files get a wiggle_box summary for no extra charge
-      if ($are_peaks || $gfflines > 100000) {
+      if ($are_peaks || $gfflines > 10){#0000) {
 	  $are_peaks ? $peaks++ : $summary++;
-	  print STDERR "Working on summary (wiggle box) tracks...\n" if $debug && $are_peaks;
-	  print STDERR "This is a really big GFF file, I am making summary (wiggle box) tracks...\n" if $debug && !$are_peaks;
-	  mkdir "$bdir/wib" unless -d "$bdir/wib";
+	  print STDERR "      Working on summary (wiggle box) tracks...\n" if $debug && $are_peaks;
+	  print STDERR "      This is a really big GFF file, I am making summary (wiggle box) tracks...\n" if $debug && !$are_peaks;
+	  mkdir File::Spec->catfile($bdir, "wib") unless -d File::Spec->catfile($bdir, "wib");
 	  my $file_type = $are_peaks ? 'peaks' : 'summary';
-	  my $cmd = "$scripts/gff2wig_summary.pl '$outfile' $bdir/wib $file_type";
-	  print STDERR "\nexecuting: $cmd...\n" if $debug;
-	  system $cmd;
+	  my $cmd = File::Spec->catfile($scripts, "gff2wig_summary.pl") . " '$outfile' '" . File::Spec->catfile($bdir, "wib") . "' $file_type";
+	  print STDERR "      Executing gff2wig_summary.pl...\n\n" if $debug;
+          print STDERR "      vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
+          system $cmd;
+          print STDERR "\n      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
       
 	  if (!$gfflines) {
 	      unlink $outfile;
@@ -247,9 +297,9 @@ PROJECT: for my $d (@projects) {
       }
   }
     # Got WIG?
-    for (@wig) { 
+    for (@wig) {
       my $wig_file = $_;
-      print STDERR "\n\nWorking on WIG FILE $_...\n" if $debug;
+      print STDERR "  Processing WIG file $_...\n" if $debug;
       my ($volume,$path,$file) = File::Spec->splitpath($_);
       $wib_dir ||= "$bdir/wib";
       mkdir $wib_dir unless -d $wib_dir;
@@ -259,26 +309,30 @@ PROJECT: for my $d (@projects) {
       (my $wigname = $file) =~ s/\.wig\S+$//; 
       my $display_name = escape($wigname);
 
-      print STDERR "making the binary file now...\n" if $debug;
-      my $cmd = "wiggle2gff3.pl --source '$wigname' --path $wib_dir $wig_file |sed 's/chr//' | perl -pe 's/Name=[^;]+/Name=$display_name/' |gzip -c >'$wigout'";
-      print STDERR "\nexecuting: $cmd...\n\n" if $debug;
+      print STDERR "  Making the binary file now...\n" if $debug;
+      my $cmd = "wiggle2gff3.pl --source '$wigname' --path '$wib_dir' '$wig_file' |sed 's/chr//' | perl -pe 's/Name=[^;]+/Name=$display_name/' |gzip -c >'$wigout'";
+      print STDERR "\n  Executing wiggle2gff3.pl...\n" if $debug;
+      print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
       system $cmd;
-      print STDERR "OK: $wigout is saved\n" if $debug;
+      print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
+      print STDERR "  Done making binary: $wigout is saved\n" if $debug;
       push @gff_to_load, $wigout;
       
     }
 
+    print "Done processing data files.\n\n";
+
     if (@gff_to_load) {
       # fix local paths
       if ($where ne $final_where) {
-	    print STDERR "fixing local path $where -> $final_where\n" if $debug;
-	    
-	    system "gunzip $where/browser/$d/gff/*gz";
-	    system "perl -i -pe 's|wigfile=$where|wigfile=$final_where|' $where/browser/$d/gff/*";
-	    system "gzip $where/browser/$d/gff/*";
+	    print STDERR "  Fixing local path \"$where\" -> \"$final_where\" in GFF files pointing at WIGs.\n" if $debug;
+            my $gff_dir = File::Spec->catfile($bdir, "gff");
+	    system "gunzip " . File::Spec->catfile($gff_dir, "*gz");
+	    system "perl -i -pe 's|wigfile=$where|wigfile=$final_where|' " . File::Spec->catfile($gff_dir, "*");
+	    system "gzip " . File::Spec->catfile($gff_dir, "*");
 	}
 
-      print STDERR "GFF files for loading:\n", (Dumper \@gff_to_load), "\n" if $debug;
+      print STDERR "GFF files for loading:\n  " . (join("\n  ", @gff_to_load)) . "\n" if $debug;
 
       my @non_summary = grep {!/_summary/ && !/_wiggle/ && !/_peak/} @gff_to_load;
       my @summary     = grep {/_summary/} @gff_to_load;
@@ -300,7 +354,7 @@ PROJECT: for my $d (@projects) {
       }
 
       if (!$species) {
-	  print STDERR "I still don't know the species for $lab, I will try to guess from the final gff data\n" if $debug;
+	  print STDERR "\n  I still don't know the species for $lab, I will try to guess from the final gff data\n" if $debug;
 	  OUTER: for my $f (@gff_to_load) {
 	      chomp(my @refs = `zcat $f |cut -f1 |sort -u`);
 	      for my $r (@refs) {
@@ -311,11 +365,13 @@ PROJECT: for my $d (@projects) {
       }
 
       # Now we load the actual Bio::DB::Seqfeature::Store database
-      print STDERR "I will now load the GFF files into the database...\n\n" if $debug;
-      my $cmd = "nice -10 bp_seqfeature_load.pl -c -d $db_dir -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
-      print STDERR "\nexecuting: $cmd...\n" if $debug;
+      my $cmd = "nice -10 bp_seqfeature_load.pl -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
+      print STDERR "\n  I will now load the GFF files into the database...\n" if $debug;
+      print STDERR "\n    Executing bp_seqfeature_load.pl...\n" if $debug;
+      print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
       system $cmd;
-      print STDERR "Done loading!\n\n" if $debug;
+      print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
+      print STDERR "  Done loading!\n\n" if $debug;
     }
     else {
       next;
@@ -327,17 +383,24 @@ PROJECT: for my $d (@projects) {
     }
     $species ||= 'unknown';
 
-    system "chmod -R 777 $bdir" or warn $!; 
+    system("chmod -R a+rX $bdir") == 0 or warn "Couldn't change read permissions on $bdir: $!"; 
+    system("chmod -R ug+w $bdir") == 0 or warn "Couldn't change write permissions on $bdir: $!"; 
 
-    my $conf_dir = $where . "/browser/$species";
+    print STDERR "Writing configuration file.\n" if $debug;
+    my $conf_dir;
+    if ($browser_dir_pre_proj) {
+      $conf_dir   = ($browser_conf_species ? File::Spec->catfile($bdir, $species) : $bdir);
+    } else {
+      $conf_dir   = ($browser_conf_species ? File::Spec->catfile($browser_root_dir, $browser_dir_suffix, $species) : $browser_root_dir);
+    }
     mkdir $conf_dir unless -d $conf_dir;
-    open CONF, ">$conf_dir/$d.conf";
+    open CONF, ">", File::Spec->catfile($conf_dir, "$d.conf");
 
     print CONF 
 	"[$d:database]\n",
 	"db_adaptor    = Bio::DB::SeqFeature::Store\n",
 	"db_args       = -adaptor berkeleydb\n",
-	"                -dsn    $final_where/browser/$d/db\n\n";
+	"                -dsn    " . File::Spec->catfile($final_bdir, "db") . "\n\n";
 
     if ($peaks) {
 	my $conf = get_config('wiggle_discrete',$lab);
@@ -347,7 +410,7 @@ PROJECT: for my $d (@projects) {
 	print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
 	print CONF sprintf("%-20s","label")."= 1\n";
 	print CONF sprintf("%-20s","key")."= $d $desc\n";
-	print CONF sprintf("%-20s","category")."= Previews:$lab:computed peak tracks\n";
+	print CONF sprintf("%-20s","category")."= modENCODE Preview Tracks:$lab:computed peak tracks\n";
 	print CONF $conf;
 	print CONF sprintf("%-20s",'config set')."= wiggle_discrete\n";
 	print CONF sprintf("%-20s",'citation')."= $readme_text\n\n";
@@ -360,7 +423,7 @@ PROJECT: for my $d (@projects) {
       print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
       print CONF sprintf("%-20s","label")."= 1\n";
       print CONF sprintf("%-20s","key")."= $d $desc\n";
-      print CONF sprintf("%-20s","category")."= Previews:$lab:summary tracks\n";
+      print CONF sprintf("%-20s","category")."= modENCODE Preview Tracks:$lab:summary tracks\n";
       print CONF $conf;
       print CONF sprintf("%-20s",'config set')."= wiggle_discrete\n";
       print CONF sprintf("%-20s",'citation')."= $readme_text\n\n";
@@ -372,7 +435,7 @@ PROJECT: for my $d (@projects) {
       print CONF sprintf("%-20s","database")."= $d\n";
       print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
       print CONF sprintf("%-20s","label")."= 1\n";
-      print CONF sprintf("%-20s","category")."= Previews:$lab:wiggle tracks\n";
+      print CONF sprintf("%-20s","category")."= modENCODE Preview Tracks:$lab:wiggle tracks\n";
       print CONF sprintf("%-20s","key")."= $d $desc\n";
       print CONF $conf;
       print CONF sprintf("%-20s",'config set')."= wiggle\n";
@@ -383,7 +446,7 @@ PROJECT: for my $d (@projects) {
     # (if it mixed in with other classes, do not use it)
     my %realclass = map {$_=>1} grep { !/^$/ } keys %class;
     my @classes = scalar(keys %realclass) > 1 ? grep {!/basic/} keys %realclass : keys %realclass;
-    map{print STDERR "Class: $_\n"} (keys %realclass) if $debug;
+    map{print STDERR "  Class: $_\n"} (keys %realclass) if $debug;
     
     for my $class (@classes) {
       my $conf = get_config($class, $lab);
@@ -392,8 +455,8 @@ PROJECT: for my $d (@projects) {
       print CONF sprintf("%-20s","database")."= $d\n";
       print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
       print CONF sprintf("%-20s","label")."= 1\n";
-      print CONF sprintf("%-20s","key")."=$d $desc\n";
-      print CONF sprintf("%-20s","category")."= Previews:$lab:$class\n";
+      print CONF sprintf("%-20s","key")."= $d $desc\n";
+      print CONF sprintf("%-20s","category")."= modENCODE Preview Tracks:$lab:$class\n";
       print CONF $conf;
       print CONF  sprintf("%-20s",'config set')."= $class\n";
       print CONF "citation = $readme_text\n\n";
@@ -403,9 +466,11 @@ PROJECT: for my $d (@projects) {
   else {
     print STDERR "\n\nSubmission $d had no GFF or WIG files, what am I suppposed to do with it?\n\n";
   } 
+
+  print STDERR "Done with submission $d!\n" if $debug;
 }
 
-print STDERR "\n-------\nDONE!\n------\n" if $debug;
+print STDERR "\n-------\nDone with all processing!\n-------\n" if $debug;
   
 
 # Figure out which species we have based on chromosome names
@@ -414,16 +479,16 @@ sub guess_species {
   my $ref   = shift;
   my ($species,$reason);
   $species = $organism{$group};
-  $reason  = "Group name $group";
+  $reason  = "group name \"$group\"";
 
   unless ($species) {
     $species = 'worm' if $ref =~ /^[IV]/;
     $species = 'fly'  if $ref =~ /^[2-4U]/;
-    $reason = "reference sequence name $ref";
+    $reason = "reference sequence name \"$ref\"";
   }
 
   if ($species) {
-    print STDERR "\nI guessed species = $species based on $reason!\n\n" if $species && $debug;
+    print STDERR "    I guessed species = \"$species\" based on $reason!\n" if $species && $debug;
   }
   return $species;
 }
@@ -439,6 +504,7 @@ sub recursedir {
   if ( opendir(DIR, "$dir")) {
     #  get files, skipping hidden . and ..
     #
+    print "Reading dir $dir\n";
     for my $file(grep { !/^\./ } readdir DIR) {
       if(-d "$dir/$file") {
         #  recurse subdirs
@@ -466,7 +532,7 @@ sub get_config {
   my $retval;
   
   my $conf = ConfigSet->new($class);
-  print STDERR "The default options for $class are:\n",(Dumper [$conf->option]), "\n" if $debug;
+  print STDERR "  The default options for $class are:\n    " . (join(", ", $conf->option)) .  "\n" if $debug;
   for my $option($conf->option) {
       my @options = $conf->option($option);
       my $o = shift @options;
@@ -481,7 +547,9 @@ sub get_config {
       }
   }
 
-  print STDERR "This is the config for $class:", $retval, "\n\n" if $debug;
+  my $pretty_retval = $retval;
+  $pretty_retval =~ s/^/    /gm;
+  print STDERR "  This is the config for $class:\n" . $pretty_retval . "\n" if $debug;
   if ($retval =~ /config set\s+=\s*quantitative/) {
       $retval =~ s/bgcolor/\#bgcolor/;
   }
@@ -507,7 +575,7 @@ sub find_wig_and_gff {
   my ($gff,$wig,$files) = @_;
   for my $file (@$files) {
     print STDERR "I am looking at $file... " if $debug;
-    my $type = 'an UNKNOWN RUBBISH FILE';
+    my $type = 'not a data file';
     if ($file =~ /\.gff3?/) {
       push @$gff, $file;
       $type = 'a GFF file';
@@ -517,16 +585,16 @@ sub find_wig_and_gff {
       $type = 'a WIG file';
     }
     elsif (`head $file |grep 'type=wiggle_0'`) {
-      my $newfile = $file . ".wig";
-      system "mv $file $newfile";
-      push @$wig, $newfile;
-      $type = "a WIG file, but I had to guess\n Renamed to $newfile";
+#      my $newfile = $file . ".wig";
+#      system "mv $file $newfile";
+      push @$wig, $file;
+      $type = "a WIG file, but I had to guess";
     }
-    elsif (`head $file |grep '\#\#gff-version 3'`) {
-      my $newfile = $file . ".gff";
-      system "mv $file $newfile";
-      push @$gff, $newfile;
-      $type = "a GFF file, but I had to guess.\nRenamed to $newfile";
+    elsif (`head $file |grep '\#\#gff-version\\s*\\s3'`) {
+#      my $newfile = $file . ".gff";
+#      system "mv $file $newfile";
+      push @$gff, $file;
+      $type = "a GFF file, but I had to guess";
     }
     print STDERR "It is $type.\n" if $debug;
   }
