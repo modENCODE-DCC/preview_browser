@@ -1,9 +1,15 @@
-#!/usr/local/perl5/5.8/bin/perl -w  
+#!/usr/bin/perl
 # Script to turn GFF features into a wiggle binary file
 # The point is to make a high-level summary view with little detail
 # Thanks to EO Stinson for the original script template
 use strict;
-use lib "$ENV{HOME}/preview_data/scripts/lib";
+my $root_dir;
+BEGIN {
+  $root_dir = $0;
+  $root_dir =~ s/[^\/]*$//;
+  $root_dir = "./" unless $root_dir =~ /\//;
+  push @INC, $root_dir . "/lib";
+}
 use Bio::Graphics::Wiggle;
 use Digest::MD5 'md5_hex';
 use MyConstants;
@@ -81,11 +87,11 @@ while (<IN>) {
 close_all();
 
 # Now, make wiggle tracks of all the GFF sub-files
-print STDERR "\nNow preparing wiggle files\n" if $debug;
+print STDERR "      Now preparing wiggle files\n" if $debug;
 open GFFOUT, "|gzip -c >'$gffout'" or die "Could not open outfile";
 print GFFOUT "##gff-version 3\n";
 
-print STDERR Dumper(\%GFF) if $debug;
+#print STDERR Dumper(\%GFF) if $debug;
 
 for my $chr (keys %GFF) {
   my $types = $GFF{$chr};
@@ -94,7 +100,7 @@ for my $chr (keys %GFF) {
     make_wigfile($chr,$src,$met,$label);
   }
 }
-print STDERR "Done: The GFF is in $gffout\n" if $debug;
+print STDERR "      Done: The GFF is in $gffout\n" if $debug;
 
 clean_up();
 
@@ -121,7 +127,7 @@ sub clean_up {
 sub make_wigfile {
   my ($chr,$src,$met,$wig_name) = @_;
 
-  print STDERR "Writing wib file for $chr $met:$src\n" if $debug;
+  print STDERR "        Writing wib file for $chr $met:$src\n" if $debug;
 
   mkdir($outpath) unless -d $outpath;
   my $wig_db_file = "$outpath/$wig_name.wib";  
