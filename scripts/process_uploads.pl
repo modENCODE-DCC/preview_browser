@@ -160,20 +160,20 @@ PROJECT: for my $d (@projects) {
     my (@gff,@wig);
     next if -d $bdir && !$force;
     if ($force && -d $bdir) {
-      `rm -fr $bdir`;
+      (system("rm -fr '$bdir'") == 0) or die "Couldn't clean up existing browser dir: $!";
     }
-    system("mkdir -p '$bdir'") == 0 or die $!;
+    (system("mkdir -p '$bdir'") == 0) or die "Couldn't create fresh browser dir: $!";
 
     # get the wiggle and gff files only
     find_wig_and_gff(\@gff,\@wig,$files);
 
     # GIve up now if there aren't any
     if ( (@wig + @gff) == 0 ) {
-	print STDERR "\n\nSubmission $d had no GFF or WIG files, what am I suppposed to do with it?\n\n";
+	print STDERR "\n\nSubmission $d had no GFF or WIG files, giving up.\n\n";
 	next PROJECT;
     }
 
-    my $db_dir = "$bdir/db";
+    my $db_dir = File::Spec->catfile($bdir, "db");
     mkdir $db_dir or die $! unless -d $db_dir;
 
 
@@ -182,9 +182,11 @@ PROJECT: for my $d (@projects) {
     print DT join("\n","Raw data files:", map {$where . "/uploads/$_"} grep {!/(txt|cel|pair)$/i} @$files), "\n";
 
     # This is where the berekeleydb will be stored  
-    system "rm -fr $bdir/db" if -e "$bdir/db";
-    `mkdir -m 777 $bdir/db`;
-    die "Some sort of problem with $bdir/db" unless -d "$bdir/db";
+    if (-d $db_dir) {
+      (system("rm -fr '$db_dir'") == 0) or die "Couldn't clean up existing browser database dir: $!";
+    }
+    (system("mkdir -p -m 777 '$db_dir'") == 0) or die "Couldn't create fresh browser database dir: $!";
+    die "Some sort of problem with $db_dir: $!" unless -d "$db_dir";
 
     my ($gff_dir,$wig_dir,$wib_dir);
 
@@ -193,8 +195,8 @@ PROJECT: for my $d (@projects) {
     mkdir $gff_dir unless -d $gff_dir;
 
     my (%class,%seen,$summary,$peaks);
-    print "\n\n";
-    print "Processing data files:\n";
+    print STDERR "\n\n";
+    print STDERR "Processing data files:\n";
 
     # Got GFF?
     for (@gff) {
@@ -271,16 +273,19 @@ PROJECT: for my $d (@projects) {
       print STDERR "    These are the data classes in this GFF:\n      ". join("      \n", map { "$_: " . join(", ", @{$class{$_}}) } keys(%class)) . "\n\n" if $debug;
 
       # Really big GFF files get a wiggle_box summary for no extra charge
-      if ($are_peaks || $gfflines > 10){#0000) {
+      if ($are_peaks || $gfflines > 100000) {
 	  $are_peaks ? $peaks++ : $summary++;
 	  print STDERR "      Working on summary (wiggle box) tracks...\n" if $debug && $are_peaks;
 	  print STDERR "      This is a really big GFF file, I am making summary (wiggle box) tracks...\n" if $debug && !$are_peaks;
 	  mkdir File::Spec->catfile($bdir, "wib") unless -d File::Spec->catfile($bdir, "wib");
 	  my $file_type = $are_peaks ? 'peaks' : 'summary';
-	  my $cmd = File::Spec->catfile($scripts, "gff2wig_summary.pl") . " '$outfile' '" . File::Spec->catfile($bdir, "wib") . "' $file_type";
+          my $gff2wig_summary = `which gff2wig_summary.pl`;
+          chomp($gff2wig_summary);
+          $gff2wig_summary = File::Spec->catfile($root_dir, "gff2wig_summary.pl") unless $gff2wig_summary;
+	  my $cmd = "'$gff2wig_summary' '$outfile' '" . File::Spec->catfile($bdir, "wib") . "' $file_type";
 	  print STDERR "      Executing gff2wig_summary.pl...\n\n" if $debug;
           print STDERR "      vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
-          system $cmd;
+          (system($cmd) == 0) or die "Couldn't run [$cmd]: $!";
           print STDERR "\n      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
       
 	  if (!$gfflines) {
@@ -310,17 +315,20 @@ PROJECT: for my $d (@projects) {
       my $display_name = escape($wigname);
 
       print STDERR "  Making the binary file now...\n" if $debug;
-      my $cmd = "wiggle2gff3.pl --source '$wigname' --path '$wib_dir' '$wig_file' |sed 's/chr//' | perl -pe 's/Name=[^;]+/Name=$display_name/' |gzip -c >'$wigout'";
       print STDERR "\n  Executing wiggle2gff3.pl...\n" if $debug;
       print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
-      system $cmd;
+      my $wiggle2gff3 = `which wiggle2gff3.pl`;
+      chomp($wiggle2gff3);
+      $wiggle2gff3 = File::Spec->catfile($root_dir, "wiggle2gff3.pl") unless $wiggle2gff3;
+      my $cmd = "'$wiggle2gff3' --source '$wigname' --path '$wib_dir' '$wig_file' |sed 's/chr//' | perl -pe 's/Name=[^;]+/Name=$display_name/' |gzip -c >'$wigout'";
+      (system($cmd) == 0) or die "Couldn't run [$cmd]: $!";
       print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
       print STDERR "  Done making binary: $wigout is saved\n" if $debug;
       push @gff_to_load, $wigout;
       
     }
 
-    print "Done processing data files.\n\n";
+    print STDERR "Done processing data files.\n\n";
 
     if (@gff_to_load) {
       # fix local paths
@@ -365,11 +373,14 @@ PROJECT: for my $d (@projects) {
       }
 
       # Now we load the actual Bio::DB::Seqfeature::Store database
-      my $cmd = "nice -10 bp_seqfeature_load.pl -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
+      my $bp_seqfeature_load = `which bp_seqfeature_load.pl`;
+      chomp($bp_seqfeature_load);
+      $bp_seqfeature_load = File::Spec->catfile($root_dir, "bp_seqfeature_load.pl") unless $bp_seqfeature_load;
+      my $cmd = "nice -10 '$bp_seqfeature_load' -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
       print STDERR "\n  I will now load the GFF files into the database...\n" if $debug;
       print STDERR "\n    Executing bp_seqfeature_load.pl...\n" if $debug;
       print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
-      system $cmd;
+      (system($cmd) == 0) or die "Couldn't run [$cmd]: $!";
       print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
       print STDERR "  Done loading!\n\n" if $debug;
     }
@@ -396,6 +407,7 @@ PROJECT: for my $d (@projects) {
     mkdir $conf_dir unless -d $conf_dir;
     open CONF, ">", File::Spec->catfile($conf_dir, "$d.conf");
 
+    print CONF "##species $species\n";
     print CONF 
 	"[$d:database]\n",
 	"db_adaptor    = Bio::DB::SeqFeature::Store\n",
@@ -472,6 +484,7 @@ PROJECT: for my $d (@projects) {
 
 print STDERR "\n-------\nDone with all processing!\n-------\n" if $debug;
   
+exit 0;
 
 # Figure out which species we have based on chromosome names
 sub guess_species {
@@ -504,7 +517,7 @@ sub recursedir {
   if ( opendir(DIR, "$dir")) {
     #  get files, skipping hidden . and ..
     #
-    print "Reading dir $dir\n";
+    print STDERR "Reading dir $dir\n";
     for my $file(grep { !/^\./ } readdir DIR) {
       if(-d "$dir/$file") {
         #  recurse subdirs
