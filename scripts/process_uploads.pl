@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w 
+#!/usr/bin/perl
 # This script processes unreleased uploads
 # to create a preview database and config for WIG and GFF3 files
 use strict;
@@ -279,7 +279,7 @@ PROJECT: for my $d (@projects) {
 	  print STDERR "      This is a really big GFF file, I am making summary (wiggle box) tracks...\n" if $debug && !$are_peaks;
 	  mkdir File::Spec->catfile($bdir, "wib") unless -d File::Spec->catfile($bdir, "wib");
 	  my $file_type = $are_peaks ? 'peaks' : 'summary';
-          my $gff2wig_summary = `which gff2wig_summary.pl`;
+          my $gff2wig_summary = `which gff2wig_summary.pl 2>/dev/null`;
           chomp($gff2wig_summary);
           $gff2wig_summary = File::Spec->catfile($root_dir, "gff2wig_summary.pl") unless $gff2wig_summary;
 	  my $cmd = "'$gff2wig_summary' '$outfile' '" . File::Spec->catfile($bdir, "wib") . "' $file_type";
@@ -317,7 +317,7 @@ PROJECT: for my $d (@projects) {
       print STDERR "  Making the binary file now...\n" if $debug;
       print STDERR "\n  Executing wiggle2gff3.pl...\n" if $debug;
       print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
-      my $wiggle2gff3 = `which wiggle2gff3.pl`;
+      my $wiggle2gff3 = `which wiggle2gff3.pl 2>/dev/null`;
       chomp($wiggle2gff3);
       $wiggle2gff3 = File::Spec->catfile($root_dir, "wiggle2gff3.pl") unless $wiggle2gff3;
       my $cmd = "'$wiggle2gff3' --source '$wigname' --path '$wib_dir' '$wig_file' |sed 's/chr//' | perl -pe 's/Name=[^;]+/Name=$display_name/' |gzip -c >'$wigout'";
@@ -373,7 +373,7 @@ PROJECT: for my $d (@projects) {
       }
 
       # Now we load the actual Bio::DB::Seqfeature::Store database
-      my $bp_seqfeature_load = `which bp_seqfeature_load.pl`;
+      my $bp_seqfeature_load = `which bp_seqfeature_load.pl 2>/dev/null`;
       chomp($bp_seqfeature_load);
       $bp_seqfeature_load = File::Spec->catfile($root_dir, "bp_seqfeature_load.pl") unless $bp_seqfeature_load;
       my $cmd = "nice -10 '$bp_seqfeature_load' -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
