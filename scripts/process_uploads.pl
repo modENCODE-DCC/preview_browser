@@ -251,16 +251,19 @@ PROJECT: for my $d (@projects) {
 	else {
 	  push @{$class{lookup($met)}}, $met unless $seen{$met}++ || $child;
 	}
+        my @gff_line = split "\t";
+        if ($gff_line[8] && $gff_line[8] !~ /=/) {
+          $gff_line[8] = "Name=" . $gff_line[8];
+        }
  	if ($desc) {
 	  $desc = escape($project{$d}{desc});
 
 	  # replace source tags but avoid regex here due to lots of non-word chars
-	  my @gff_line = split "\t";
 	  $gff_line[1] = $desc;
-	  $_ = join("\t",@gff_line);
 
 	  $desc = unescape($desc);
 	}
+        $_ = join("\t",@gff_line);
 
 	print GFFOUT $_;
 	$gfflines++ unless $isa_peak;
