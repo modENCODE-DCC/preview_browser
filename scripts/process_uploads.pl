@@ -52,7 +52,7 @@ if ($submission_key_url) {
   my $useragent = new LWP::UserAgent();
   my $res = $useragent->mirror($submission_key_url, $submission_key_file);
   if (!$res->is_success) {
-    warn "Unable to mirror submission key URL to local file: $!";
+    warn "Unable to mirror submission key URL $submission_key_url to local file $submission_key_file: $!";
   }
 }
 
@@ -313,7 +313,7 @@ PROJECT: for my $d (@projects) {
       mkdir $wib_dir unless -d $wib_dir;
 
       # now we make the wiggle binary
-      (my $wigout = "$gff_dir/$file")  =~ s/\.wig(\.gz)?/_wiggle\.gff\.gz/;
+      (my $wigout = "$gff_dir/$file")  =~ s/\.wig(\.gz)?$/_wiggle\.gff\.gz/;
       (my $wigname = $file) =~ s/\.wig\S+$//; 
       my $display_name = escape($wigname);
 

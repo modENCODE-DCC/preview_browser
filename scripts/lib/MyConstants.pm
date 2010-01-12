@@ -7,25 +7,25 @@ package MyConstants;
 use constant SUBMISSION_KEY_URL => "http://submit.modencode.org/submit/public/list.txt";
 
 # The base directory for uploaded/extracted data files
-use constant WHERE      => "$ENV{HOME}/preview_data";
+use constant WHERE      => "/srv/www/data/pipeline";
 
 # Subdirectory under WHERE that contains actual uploaded data
-use constant UPLOAD_DIR      => "uploads";
+use constant UPLOAD_DIR      => "";
 
 # Path to append to end of project directory to see actual data 
 # (e.g. "extracted" in uploaded/123/extracted)
-use constant DATA_DIR_SUFFIX      => "";
+use constant DATA_DIR_SUFFIX      => "extracted";
 
 # Browser root dir
-use constant BROWSER_ROOT  => "$ENV{HOME}/preview_data";
+use constant BROWSER_ROOT  => "/srv/www/data/pipeline";
 
 # Set this to 1 to generate a path like browser_root/123/browser, 
 # set this to 0 to generate a path like browser_root/browser/123
-use constant BROWSER_DIR_BEFORE_PROJECT_ID  => 0;
+use constant BROWSER_DIR_BEFORE_PROJECT_ID  => 1;
 
 # Set this to 1 to generate a config like browser_root[/123]/fly/123.conf, 
 # set this to 0 to generate a path like browser_root[/123]/123.conf
-use constant BROWSER_CONF_USES_SPECIES  => 1;
+use constant BROWSER_CONF_USES_SPECIES  => 0;
 
 # Path to append to end of project directory for storing browser data
 # (e.g. "browser" in uploaded/123/browser)
@@ -33,7 +33,7 @@ use constant BROWSER_DIR_SUFFIX      => "browser";
 
 # If the final location of wib files is somewhere else, 
 # set the base directory for ./browser here
-use constant DESTINATION_DIR      => "/nfs/preview_data";
+use constant DESTINATION_DIR      => "/srv/www/data/pipeline";
 
 # verbose reporting
 use constant DEBUG      => 1;
