@@ -38,6 +38,11 @@ use constant DESTINATION_DIR      => "/srv/www/data/pipeline";
 # verbose reporting
 use constant DEBUG      => 1;
 
+# BAM FASTA sources
+use constant FASTA_PATH => "/srv/www/pipeline/gbrowse/bam_support_fasta";
+
+use constant SAMTOOLS_PATH => "/srv/www/pipeline/submit/script/validators/modencode/samtools";
+
 # Which types will trigger a peak (wiggle box) summary
 use constant WIG        => qw/transcript_region
                               protein_binding_site

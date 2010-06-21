@@ -17,7 +17,9 @@ use ConfigSet;
 use MyConstants;
 use Data::Dumper;
 use File::Spec;
+use File::Copy;
 use LWP::UserAgent;
+use PerlIO::gzip;
 use CGI  qw/escape unescape/;
 
 my $debug                = MyConstants::DEBUG;
@@ -31,6 +33,8 @@ my $browser_root_dir     = MyConstants::BROWSER_ROOT;
 my $browser_conf_species = MyConstants::BROWSER_CONF_USES_SPECIES;
 my $browser_dir_pre_proj = MyConstants::BROWSER_DIR_BEFORE_PROJECT_ID;
 my $browser_dir_suffix   = MyConstants::BROWSER_DIR_SUFFIX;
+my $fasta_path           = MyConstants::FASTA_PATH;
+my $samtools_path        = MyConstants::SAMTOOLS_PATH;
 my %make_summary         = map {$_ => 1}  MyConstants::WIG;
 my %refseq_OK            = map {$_ => 1}  MyConstants::REFSEQ;
 
@@ -157,7 +161,7 @@ PROJECT: for my $d (@projects) {
     my @gff_to_load;
 
     # partition into gff and WIG files, give up if there are neither
-    my (@gff,@wig);
+    my (@gff,@wig,@sam);
     next if -d $bdir && !$force;
     if ($force && -d $bdir) {
       (system("rm -fr '$bdir'") == 0) or die "Couldn't clean up existing browser dir: $!";
@@ -165,11 +169,11 @@ PROJECT: for my $d (@projects) {
     (system("mkdir -p '$bdir'") == 0) or die "Couldn't create fresh browser dir: $!";
 
     # get the wiggle and gff files only
-    find_wig_and_gff(\@gff,\@wig,$files);
+    find_wig_and_gff(\@gff,\@wig,\@sam,$files);
 
     # GIve up now if there aren't any
-    if ( (@wig + @gff) == 0 ) {
-	print STDERR "\n\nSubmission $d had no GFF or WIG files, giving up.\n\n";
+    if ( (@wig + @gff + @sam) == 0 ) {
+	print STDERR "\n\nSubmission $d had no GFF, WIG, or SAM files, giving up.\n\n";
 	next PROJECT;
     }
 
@@ -188,7 +192,7 @@ PROJECT: for my $d (@projects) {
     (system("mkdir -p -m 777 '$db_dir'") == 0) or die "Couldn't create fresh browser database dir: $!";
     die "Some sort of problem with $db_dir: $!" unless -d "$db_dir";
 
-    my ($gff_dir,$wig_dir,$wib_dir);
+    my ($gff_dir,$wig_dir,$wib_dir,$bam_dir);
 
     # get ready if we have GFF and/or WIG
     $gff_dir = "$bdir/gff";
@@ -330,62 +334,158 @@ PROJECT: for my $d (@projects) {
       push @gff_to_load, $wigout;
       
     }
+    # Got SAM?
+    # First throw out any SAM for which a BAM exists
+    {
+      my %bam;
+      foreach (@sam) { $bam{$_} = 1 if ($_ =~ /\.bam\.sorted\.bam$/); }
+      @sam = grep { !$bam{$_ . ".bam.sorted.bam"} } grep { $_ =~ /\.sam(.gz)?$/ } @sam;
+      push @sam, keys(%bam);
+    }
+
+    my %sam_by_id;
+    my $i = 0;
+    foreach my $sam_file (@sam) {
+      $bam_dir ||= "$bdir/bam";
+      print STDERR "  Processing SAM file $_...\n" if $debug;
+
+      if ($sam_file =~ /\.gz$/) {
+        open FH, "<:gzip", $sam_file;
+      } else {
+        open FH, "<", $sam_file;
+      }
+      my $fa_organism;
+      while (defined(my $line = <FH>)) {
+        if ($line =~ m/^\s*@/) { #header
+          chomp $line;
+          if ($line =~ m/^\@SQ/) {
+            ($fa_organism) = ($line =~ m/\tSP:([^\t]+)\t?/);
+            last;
+          }
+        }
+      }
+
+      my $fa_file = "";
+      #will need to change these if we allow different versions of builds
+      $fa_file = File::Spec->catfile($fasta_path, "elegans.WS190.dna.fa.fai") if ($fa_organism eq "Caenorhabditis elegans");
+      $fa_file = File::Spec->catfile($fasta_path, "dmel.r5.9.dna.fa.fai") if ($fa_organism eq "Drosophila melanogaster");
+      $fa_file = File::Spec->catfile($fasta_path, "dpse.r2.6.dna.fa.fai") if ($fa_organism eq "Drosophila pseudoobscura pseudoobscura");
+      $fa_file = File::Spec->catfile($fasta_path, "dsim.r1.3.dna.fa.fai") if ($fa_organism eq "Drosophila simulans");
+      $fa_file = File::Spec->catfile($fasta_path, "dsec.r1.3.dna.fa.fai") if ($fa_organism eq "Drosophila sechellia");
+      $fa_file = File::Spec->catfile($fasta_path, "dper.r1.3.dna.fa.fai") if ($fa_organism eq "Drosophila persimilis");
+
+      my ($volume,$path,$file) = File::Spec->splitpath($sam_file);
+      mkdir $bam_dir unless -d $bam_dir;
+      my $bam_out;
+      if ($sam_file !~ /\.bam$/) {
+        # Need to make a BAM file?
+        $bam_out = File::Spec->catfile($bam_dir, $file);
+        print STDERR "  Importing SAM $d...\n" if $debug;
+
+        if ($sam_file =~ /^\./ || $sam_file =~ /[ ;&><|()\[\]]/) {
+          print STDERR "$sam_file contains dangerous characters ( ;&<>|()[] ); please rename!\n";
+          next;
+        }
+
+        my $cmd = "$samtools_path/samtools import $fa_file $sam_file $bam_out.bam 2>&1";
+        print STDERR "    $cmd\n" if $debug;
+        my $output = `$cmd`;
+        if ($? || $output =~ /fail to open file for reading/) {
+          print STDERR "Unable to import $file\n";
+          next;
+        }
+        $cmd = "$samtools_path/samtools sort $bam_out.bam $bam_out.bam.sorted 2>&1";
+        print STDERR "    $cmd\n" if $debug;
+        $output = `$cmd`;
+        if ($? || $output =~ /fail to open file for reading/) {
+          print STDERR "Unable to sort $file\n";
+          next;
+        }
+        $cmd = "$samtools_path/samtools index $bam_out.bam.sorted.bam 2>&1";
+        print STDERR "    $cmd\n" if $debug;
+        $output = `$cmd`;
+        if ($? || $output =~ /fail to open file for reading/) {
+          print STDERR "Unable to index $file\n";
+          next;
+        }
+        $bam_out = "$bam_out.bam.sorted.bam";
+      } else {
+        # Copy BAM file into place
+        $bam_out = File::Spec->catfile($bam_dir, $file);
+        print STDERR "  Copying existing BAM file to preview browser.\n" if $debug;
+        copy($sam_file, $bam_out) unless -e $bam_out;
+        copy($sam_file . ".bai", $bam_out . ".bai") unless -e $bam_out;
+      }
+      $sam_by_id{$i} = $bam_out;
+      $i++;
+    }
 
     print STDERR "Done processing data files.\n\n";
 
-    if (@gff_to_load) {
-      # fix local paths
-      if ($where ne $final_where) {
-	    print STDERR "  Fixing local path \"$where\" -> \"$final_where\" in GFF files pointing at WIGs.\n" if $debug;
-            my $gff_dir = File::Spec->catfile($bdir, "gff");
-	    system "gunzip " . File::Spec->catfile($gff_dir, "*gz");
-	    system "perl -i -pe 's|wigfile=$where|wigfile=$final_where|' " . File::Spec->catfile($gff_dir, "*");
-	    system "gzip " . File::Spec->catfile($gff_dir, "*");
-	}
-
-      print STDERR "GFF files for loading:\n  " . (join("\n  ", @gff_to_load)) . "\n" if $debug;
-
-      my @non_summary = grep {!/_summary/ && !/_wiggle/ && !/_peak/} @gff_to_load;
-      my @summary     = grep {/_summary/} @gff_to_load;
-      my @wiggle      = grep {/_wiggle/}  @gff_to_load;
-      my @peak        = grep {/_peak/}  @gff_to_load;
-
-      # make an audit trail
-      if (@non_summary) {
-        print DT "\nRegular GFF:\n",join("\n",@non_summary), "\n";
+    if (@gff_to_load || keys(%sam_by_id)) {
+      if (keys(%sam_by_id)) {
+        if ($where ne $final_where) {
+          foreach my $id (keys(%sam_by_id)) {
+            my ($volume,$path,$file) = File::Spec->splitpath($sam_by_id{$id});
+            print STDERR "  Fixing local path \"$where\" -> \"$final_where\" in SAM configurations.\n" if $debug;
+            $sam_by_id{$id} = File::Spec->catfile($final_bdir, "bam", $file);
+          }
+        }
       }
-      if (@summary) {
-	print DT "\nWiggle box summary GFF:\n",join("\n",@summary), "\n";
-      }
-      if (@wiggle) {
-        print DT "\nWiggle GFF:\n",join("\n",@wiggle), "\n";
-      }
-      if (@peak) {
-	print DT "\nPeak Wiggle GFF:\n",join("\n",@peak), "\n";
-      }
+      if (@gff_to_load) {
+        # fix local paths
+        if ($where ne $final_where) {
+              print STDERR "  Fixing local path \"$where\" -> \"$final_where\" in GFF files pointing at WIGs.\n" if $debug;
+              my $gff_dir = File::Spec->catfile($bdir, "gff");
+              system "gunzip " . File::Spec->catfile($gff_dir, "*gz");
+              system "perl -i -pe 's|wigfile=$where|wigfile=$final_where|' " . File::Spec->catfile($gff_dir, "*");
+              system "gzip " . File::Spec->catfile($gff_dir, "*");
+          }
 
-      if (!$species) {
-	  print STDERR "\n  I still don't know the species for $lab, I will try to guess from the final gff data\n" if $debug;
-	  OUTER: for my $f (@gff_to_load) {
-	      chomp(my @refs = `zcat $f |cut -f1 |sort -u`);
-	      for my $r (@refs) {
-		  $species = guess_species($lab,$r);
-		  last OUTER if $species;
-	      }
-	  }
-      }
+        print STDERR "GFF files for loading:\n  " . (join("\n  ", @gff_to_load)) . "\n" if $debug;
 
-      # Now we load the actual Bio::DB::Seqfeature::Store database
-      my $bp_seqfeature_load = `which bp_seqfeature_load.pl 2>/dev/null`;
-      chomp($bp_seqfeature_load);
-      $bp_seqfeature_load = File::Spec->catfile($root_dir, "bp_seqfeature_load.pl") unless $bp_seqfeature_load;
-      my $cmd = "nice -10 '$bp_seqfeature_load' -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
-      print STDERR "\n  I will now load the GFF files into the database...\n" if $debug;
-      print STDERR "\n    Executing bp_seqfeature_load.pl...\n" if $debug;
-      print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
-      (system($cmd) == 0) or die "Couldn't run [$cmd]: $!";
-      print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
-      print STDERR "  Done loading!\n\n" if $debug;
+        my @non_summary = grep {!/_summary/ && !/_wiggle/ && !/_peak/} @gff_to_load;
+        my @summary     = grep {/_summary/} @gff_to_load;
+        my @wiggle      = grep {/_wiggle/}  @gff_to_load;
+        my @peak        = grep {/_peak/}  @gff_to_load;
+
+        # make an audit trail
+        if (@non_summary) {
+          print DT "\nRegular GFF:\n",join("\n",@non_summary), "\n";
+        }
+        if (@summary) {
+          print DT "\nWiggle box summary GFF:\n",join("\n",@summary), "\n";
+        }
+        if (@wiggle) {
+          print DT "\nWiggle GFF:\n",join("\n",@wiggle), "\n";
+        }
+        if (@peak) {
+          print DT "\nPeak Wiggle GFF:\n",join("\n",@peak), "\n";
+        }
+
+        if (!$species) {
+            print STDERR "\n  I still don't know the species for $lab, I will try to guess from the final gff data\n" if $debug;
+            OUTER: for my $f (@gff_to_load) {
+                chomp(my @refs = `zcat $f |cut -f1 |sort -u`);
+                for my $r (@refs) {
+                    $species = guess_species($lab,$r);
+                    last OUTER if $species;
+                }
+            }
+        }
+
+        # Now we load the actual Bio::DB::Seqfeature::Store database
+        my $bp_seqfeature_load = `which bp_seqfeature_load.pl 2>/dev/null`;
+        chomp($bp_seqfeature_load);
+        $bp_seqfeature_load = File::Spec->catfile($root_dir, "bp_seqfeature_load.pl") unless $bp_seqfeature_load;
+        my $cmd = "nice -10 '$bp_seqfeature_load' -c -d '$db_dir' -f -a berkeleydb " . join(' ',map {"'$_'"} @gff_to_load);
+        print STDERR "\n  I will now load the GFF files into the database...\n" if $debug;
+        print STDERR "\n    Executing bp_seqfeature_load.pl...\n" if $debug;
+        print STDERR "    vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" if $debug;
+        (system($cmd) == 0) or die "Couldn't run [$cmd]: $!";
+        print STDERR "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" if $debug;
+        print STDERR "  Done loading!\n\n" if $debug;
+      }
     }
     else {
       next;
@@ -400,7 +500,6 @@ PROJECT: for my $d (@projects) {
     system("chmod -R a+rX $bdir") == 0 or warn "Couldn't change read permissions on $bdir: $!"; 
     system("chmod -R ug+w $bdir") == 0 or warn "Couldn't change write permissions on $bdir: $!"; 
 
-    print STDERR "Writing configuration file.\n" if $debug;
     my $conf_dir;
     if ($browser_dir_pre_proj) {
       $conf_dir   = ($browser_conf_species ? File::Spec->catfile($bdir, $species) : $bdir);
@@ -408,7 +507,9 @@ PROJECT: for my $d (@projects) {
       $conf_dir   = ($browser_conf_species ? File::Spec->catfile($browser_root_dir, $browser_dir_suffix, $species) : $browser_root_dir);
     }
     mkdir $conf_dir unless -d $conf_dir;
-    open CONF, ">", File::Spec->catfile($conf_dir, "$d.conf");
+    my $conf_file = File::Spec->catfile($conf_dir, "$d.conf");
+    print STDERR "Writing configuration file to $conf_file.\n" if $debug;
+    open CONF, ">", $conf_file;
 
     print CONF "##species $species\n";
     print CONF 
@@ -416,6 +517,15 @@ PROJECT: for my $d (@projects) {
 	"db_adaptor    = Bio::DB::SeqFeature::Store\n",
 	"db_args       = -adaptor berkeleydb\n",
 	"                -dsn    " . File::Spec->catfile($final_bdir, "db") . "\n\n";
+    foreach my $id (keys(%sam_by_id)) {
+      my $bam_out = $sam_by_id{$id};
+      print CONF "[${d}_sam_$id:database]\n";
+      print CONF "db_adaptor    = Bio::DB::Sam\n";
+      print CONF "db_args       = -fasta $fasta_path/fly.fa\n";
+      print CONF "                -bam $bam_out\n";
+      print CONF "                -split_splices 1\n";
+    }
+
 
     if ($peaks) {
 	my $conf = get_config('wiggle_discrete',$lab);
@@ -455,6 +565,23 @@ PROJECT: for my $d (@projects) {
       print CONF $conf;
       print CONF sprintf("%-20s",'config set')."= wiggle\n";
       print CONF sprintf("%-20s",'citation')."= $readme_text\n\n";
+    }
+    if (keys(%sam_by_id)) {
+      foreach my $id (keys(%sam_by_id)) {
+        my ($volume,$path,$file) = File::Spec->splitpath($sam_by_id{$id});
+        my $conf = get_config('sam', $lab);
+        print CONF "[${d}_SAM]\n";
+        print CONF sprintf("%-20s","feature")."= read_pair\n";
+        print CONF sprintf("%-20s","bump")."= fast\n";
+        print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
+        print CONF sprintf("%-20s","label")."= sub { return shift->display_name; }\n";
+        print CONF sprintf("%-20s","draw_target")."= 1\n";
+        print CONF sprintf("%-20s","key")."= $d $file\n";
+        print CONF sprintf("%-20s","database")."= ${d}_sam_$id\n";
+        print CONF $conf;
+        print CONF sprintf("%-20s",'config set')."= sam\n";
+        print CONF sprintf("%-20s",'citation')."= $readme_text\n\n";
+      }
     }
     
     # Before initializing @classes check if unknown is the only class 
@@ -588,17 +715,21 @@ sub lookup {
 }
 
 sub find_wig_and_gff {
-  my ($gff,$wig,$files) = @_;
+  my ($gff,$wig,$sam,$files) = @_;
   for my $file (@$files) {
     print STDERR "I am looking at $file... " if $debug;
     my $type = 'not a data file';
-    if ($file =~ /\.gff3?/) {
+    if ($file =~ /\.gff3?$/) {
       push @$gff, $file;
       $type = 'a GFF file';
     }
-    elsif ($file =~ /\.wig/i) {
+    elsif ($file =~ /\.wig$/i) {
       push @$wig, $file;
       $type = 'a WIG file';
+    }
+    elsif ($file =~ /\.(bam|sam)(\.gz)?$/i) {
+      push @$sam, $file;
+      $type = 'a SAM file';
     }
     elsif (`head $file |grep 'type=wiggle_0'`) {
 #      my $newfile = $file . ".wig";
