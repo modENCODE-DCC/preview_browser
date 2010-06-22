@@ -414,7 +414,7 @@ PROJECT: for my $d (@projects) {
         $bam_out = File::Spec->catfile($bam_dir, $file);
         print STDERR "  Copying existing BAM file to preview browser.\n" if $debug;
         copy($sam_file, $bam_out) unless -e $bam_out;
-        copy($sam_file . ".bai", $bam_out . ".bai") unless -e $bam_out;
+        copy($sam_file . ".bai", $bam_out . ".bai") unless -e ($bam_out . ".bai");
       }
       $sam_by_id{$i} = $bam_out;
       $i++;
@@ -570,7 +570,7 @@ PROJECT: for my $d (@projects) {
       foreach my $id (keys(%sam_by_id)) {
         my ($volume,$path,$file) = File::Spec->splitpath($sam_by_id{$id});
         my $conf = get_config('sam', $lab);
-        print CONF "[${d}_SAM]\n";
+        print CONF "[${d}_SAM_$id]\n";
         print CONF sprintf("%-20s","feature")."= read_pair\n";
         print CONF sprintf("%-20s","bump")."= fast\n";
         print CONF sprintf("%-20s","name")."= sub{shift->source_tag}\n";
